@@ -3,21 +3,31 @@ import {ApiError} from '../utilities/ApiError.js'
 import { User } from '../models/user.model.js'
 import {uploadFileOnCloudinary} from '../utilities/cloudinary.js'
 import { ApiResponse } from '../utilities/ApiResponse.js'
+import jwt from "jsonwebtoken"
 
 const generateAccessTokenAndRefreshToken = async (userId) => {
   try {
-    const user = await User.findById(userId)
-    const AccessToken = user.generateAccessToken()
-    const RefreshToken = user.generateRefreshToken()
-    user.refreshToken = RefreshToken
-    await user.save({ validationBeforeSave : false })
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new ApiError(404, "User not found");
+    }
 
-    return{AccessToken,RefreshToken}
+    // Generate tokens
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
+
+    // Save refresh token in the database
+    user.refreshToken = refreshToken;
+    await user.save({ validateBeforeSave: false });
+
+    // Return tokens properly
+    return { accessToken, refreshToken };
 
   } catch (error) {
-    throw new ApiError(500,"something went wrong while generating access and refresh token")
+    throw new ApiError(500, "Something went wrong while generating tokens");
   }
-}
+};
+
 
 const registerUser = asyncHandler( async (req,res) => {
   //get user details from frontend
@@ -129,7 +139,7 @@ const logInUser = asyncHandler(async (req,res) => {
      .json(
       new ApiResponse(200,
         {
-          user : loggedInUser , accessToken ,refreshToken
+          user : loggedInUser ,  accessToken ,refreshToken
         }
       )
      )
@@ -160,8 +170,54 @@ const logOut = asyncHandler(async (req,res) => {
         )
 })
 
+const refreshAccessToken =  asyncHandler(async (req,res) => {
+  const incomingRefreshToken = req.cookies.refreshToken || req.body.refreshToken
+
+  if (!incomingRefreshToken) {
+    throw new ApiError(401,"unauthorized request")
+  }
+
+  try {
+    const decodeToken = jwt.verify(incomingRefreshToken,process.env.REFRESH_TOKEN_SECRET)
+  
+    const user = await User.find(decodeToken?._id)
+  
+    if (!user) {
+      throw new ApiError(401,"refreshAccessToken invalid")
+    }
+  
+    if (incomingRefreshToken !== user.refreshToken) {
+      throw new ApiError(401,"refreshToken is used or invalid")
+    }
+  
+    const {accessToken,newRefreshToken} = await generateAccessTokenAndRefreshToken(user._id)
+  
+    const option = {
+      httpOnly : true,
+      secure : true
+    }
+  
+    res
+       .status(201)
+       .cookie("accessToken",accessToken,option)
+       .cookie("refreshToken",newRefreshToken,option)
+       .json(
+        new ApiResponse(200,
+          {
+            accessToken,refreshToken : newRefreshToken
+          },
+          "AccessToken refreshed Successfully"
+        )
+       )
+  } catch (error) {
+    throw new ApiError(501,error || "try again ")
+  }
+
+})
+
 export {
     registerUser,
     logInUser,
-    logOut
+    logOut,
+    refreshAccessToken
 }
